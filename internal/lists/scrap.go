@@ -8,6 +8,7 @@ import (
 
 	"github.com/LucasZatta/letter-goxd/internal/util"
 	"github.com/anaskhan96/soup"
+	"github.com/cenkalti/backoff/v4"
 )
 
 type Scrape interface {
@@ -51,101 +52,97 @@ func (s *scrape) ScrapeWatchlist(username string) *[]MovieDetails {
 		}
 	}
 
-	movies := make([]MovieDetails, 0)
+	movies := make([]MovieDetails, len(links))
 
 	wg := sync.WaitGroup{}
-	for _, link := range links {
+	for i, link := range links {
 		wg.Add(1)
 		go func(link string) {
 			movie, err := s.ScrapeMoviePage(link)
 			if err != nil {
 				log.Fatal(err)
 			}
-			movies = append(movies, *movie)
+			movies[i] = *movie
 			wg.Done()
 		}(link)
 
 	}
 	wg.Wait()
 
-	// for _, link := range links {
-	// 	fmt.Println(link)
-	// 	movie, err := s.ScrapeMoviePage(link)
-	// 	if err != nil {
-	// 		log.Fatal(err)
-	// 	}
-	// 	movies = append(movies, *movie)
-	// }
-	//spawn go routines to fetch names
-	//then in another func spawn go routines to fetch movie infos
-
-	fmt.Printf("%v\n", movies)
 	return &movies
 }
 
 func (s *scrape) ScrapeMoviePage(moviePath string) (*MovieDetails, error) {
 	var movieDetails MovieDetails
 
-	path := fmt.Sprintf("https://letterboxd.com%s", moviePath)
-	movieDetails.Url = path
+	operation := func() error {
+		path := fmt.Sprintf("https://letterboxd.com%s", moviePath)
+		movieDetails.Url = path
 
-	resp, err := soup.Get(path)
-	if err != nil {
-		os.Exit(1)
-	}
-
-	doc := soup.HTMLParse(resp)
-
-	//implement retry with backoff
-	nameRoot := doc.Find("meta", "property", "og:title")
-	if nameRoot.Error != nil {
-		//should return err and bail
-		fmt.Println(path)
-		// log.Fatal("cannot find movie name")
-		return nil, nameRoot.Error
-	}
-	movieDetails.Name = nameRoot.Attrs()["content"]
-
-	descriptionRoot := doc.Find("meta", "property", "og:description")
-	if descriptionRoot.Error != nil {
-		log.Fatal("cannot find movie description")
-	} else {
-		movieDetails.Description = descriptionRoot.Attrs()["content"]
-	}
-
-	imageRoot := doc.Find("meta", "property", "og:image")
-	if imageRoot.Error != nil {
-		log.Fatal("cannot find movie image")
-	} else {
-		movieDetails.Image = imageRoot.Attrs()["content"]
-	}
-
-	durationRoot := doc.Find("p", "class", "text-link")
-	if durationRoot.Error != nil {
-		log.Fatal("cannot find movie duration")
-	} else {
-		fmt.Println("duration:", util.ClearString(durationRoot.Text()))
-		duration := util.StringElementToInt(durationRoot.Text())
+		resp, err := soup.Get(path)
 		if err != nil {
-			log.Fatal("something went wrong ")
+			os.Exit(1)
 		}
-		movieDetails.Duration = duration
+
+		doc := soup.HTMLParse(resp)
+
+		//implement retry with backoff
+		nameRoot := doc.Find("meta", "property", "og:title")
+		if nameRoot.Error != nil {
+			//should return err and bail
+			log.Print("cannot find movie name")
+			return nameRoot.Error
+		}
+		movieDetails.Name = nameRoot.Attrs()["content"]
+
+		descriptionRoot := doc.Find("meta", "property", "og:description")
+		if descriptionRoot.Error != nil {
+			log.Print("cannot find movie description")
+			return descriptionRoot.Error
+		} else {
+			movieDetails.Description = descriptionRoot.Attrs()["content"]
+		}
+
+		imageRoot := doc.Find("meta", "property", "og:image")
+		if imageRoot.Error != nil {
+			log.Print("cannot find movie image")
+			return imageRoot.Error
+		} else {
+			movieDetails.Image = imageRoot.Attrs()["content"]
+		}
+
+		durationRoot := doc.Find("p", "class", "text-link")
+		if durationRoot.Error != nil {
+			log.Print("cannot find movie duration")
+			return durationRoot.Error
+		} else {
+			duration := util.StringElementToInt(durationRoot.Text())
+			movieDetails.Duration = duration
+		}
+
+		directorsRoot := doc.Find("meta", "name", "twitter:data1")
+		if directorsRoot.Error != nil {
+			log.Print("cannot find directors")
+			return directorsRoot.Error
+		} else {
+			movieDetails.Director = directorsRoot.Attrs()["content"]
+		}
+
+		ratingRoot := doc.Find("meta", "name", "twitter:data2")
+		if ratingRoot.Error != nil {
+			log.Print("couldnt find movie rating")
+			// return ratingRoot.Error
+		} else {
+			movieDetails.Rating = ratingRoot.Attrs()["content"]
+		}
+		return nil
 	}
 
-	directorsRoot := doc.Find("meta", "name", "twitter:data1")
-	if directorsRoot.Error != nil {
-		log.Fatal("cannot find directors")
-	} else {
-		movieDetails.Director = directorsRoot.Attrs()["content"]
-	}
-
-	ratingRoot := doc.Find("meta", "name", "twitter:data2")
-	if ratingRoot.Error != nil {
-		log.Print("couldnt find movie rating")
-	} else {
-		movieDetails.Rating = ratingRoot.Attrs()["content"]
+	err := backoff.Retry(operation, backoff.NewExponentialBackOff())
+	if err != nil {
+		log.Fatal(err)
+		return nil, err
 	}
 
 	return &movieDetails, nil
-
 }
