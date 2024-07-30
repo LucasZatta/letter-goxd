@@ -2,15 +2,28 @@ package lists
 
 import (
 	"fmt"
+	"log"
 	"os"
-	"strconv"
+	"sync"
 
 	"github.com/LucasZatta/letter-goxd/internal/util"
 	"github.com/anaskhan96/soup"
 )
 
-func ScrapeListPreview(username string) *[]MovieDetails {
-	movies := []MovieDetails{}
+type Scrape interface {
+	ScrapeWatchlist(username string) *[]MovieDetails
+	ScrapeMoviePage(moviePath string) (*MovieDetails, error)
+}
+
+type scrape struct {
+}
+
+func New() *scrape {
+	return &scrape{}
+}
+
+func (s *scrape) ScrapeWatchlist(username string) *[]MovieDetails {
+	links := make([]string, 0)
 	path := fmt.Sprintf("https://letterboxd.com/%s/watchlist", username)
 
 	for page := 1; ; page++ {
@@ -30,9 +43,7 @@ func ScrapeListPreview(username string) *[]MovieDetails {
 
 			moviePath := children.Attrs()["data-target-link"]
 
-			movieDetail := ScrapeMoviePage(moviePath)
-
-			movies = append(movies, movieDetail)
+			links = append(links, moviePath)
 		}
 		next := doc.Find("a", "class", "next")
 		if next.Error != nil {
@@ -40,12 +51,43 @@ func ScrapeListPreview(username string) *[]MovieDetails {
 		}
 	}
 
+	movies := make([]MovieDetails, 0)
+
+	wg := sync.WaitGroup{}
+	for _, link := range links {
+		wg.Add(1)
+		go func(link string) {
+			movie, err := s.ScrapeMoviePage(link)
+			if err != nil {
+				log.Fatal(err)
+			}
+			movies = append(movies, *movie)
+			wg.Done()
+		}(link)
+
+	}
+	wg.Wait()
+
+	// for _, link := range links {
+	// 	fmt.Println(link)
+	// 	movie, err := s.ScrapeMoviePage(link)
+	// 	if err != nil {
+	// 		log.Fatal(err)
+	// 	}
+	// 	movies = append(movies, *movie)
+	// }
+	//spawn go routines to fetch names
+	//then in another func spawn go routines to fetch movie infos
+
+	fmt.Printf("%v\n", movies)
 	return &movies
 }
 
-func ScrapeMoviePage(moviePath string) MovieDetails {
+func (s *scrape) ScrapeMoviePage(moviePath string) (*MovieDetails, error) {
 	var movieDetails MovieDetails
-	path := fmt.Sprintf("https://letterboxd.com/%s", moviePath)
+
+	path := fmt.Sprintf("https://letterboxd.com%s", moviePath)
+	movieDetails.Url = path
 
 	resp, err := soup.Get(path)
 	if err != nil {
@@ -54,20 +96,56 @@ func ScrapeMoviePage(moviePath string) MovieDetails {
 
 	doc := soup.HTMLParse(resp)
 
-	movieDetails.Url = doc.Find("meta", "property", "og:url").Attrs()["content"]
-	movieDetails.Name = doc.Find("meta", "property", "og:title").Attrs()["content"]
-	movieDetails.Description = doc.Find("meta", "property", "og:description").Attrs()["content"]
-	movieDetails.Image = doc.Find("meta", "property", "og:image").Attrs()["content"]
+	//implement retry with backoff
+	nameRoot := doc.Find("meta", "property", "og:title")
+	if nameRoot.Error != nil {
+		//should return err and bail
+		fmt.Println(path)
+		// log.Fatal("cannot find movie name")
+		return nil, nameRoot.Error
+	}
+	movieDetails.Name = nameRoot.Attrs()["content"]
 
-	duration, _ := strconv.Atoi(util.ClearString(doc.Find("p", "class", "text-link").Text()))
-	movieDetails.Duration = duration
+	descriptionRoot := doc.Find("meta", "property", "og:description")
+	if descriptionRoot.Error != nil {
+		log.Fatal("cannot find movie description")
+	} else {
+		movieDetails.Description = descriptionRoot.Attrs()["content"]
+	}
 
-	movieDetails.Director = doc.Find("meta", "name", "twitter:data1").Attrs()["content"]
-	rating := doc.Find("meta", "name", "twitter:data2")
-	if rating.Error == nil {
-		movieDetails.Rating = doc.Find("meta", "name", "twitter:data2").Attrs()["content"]
-	} //treat fields for missing entry error
+	imageRoot := doc.Find("meta", "property", "og:image")
+	if imageRoot.Error != nil {
+		log.Fatal("cannot find movie image")
+	} else {
+		movieDetails.Image = imageRoot.Attrs()["content"]
+	}
 
-	return MovieDetails{}
+	durationRoot := doc.Find("p", "class", "text-link")
+	if durationRoot.Error != nil {
+		log.Fatal("cannot find movie duration")
+	} else {
+		fmt.Println("duration:", util.ClearString(durationRoot.Text()))
+		duration := util.StringElementToInt(durationRoot.Text())
+		if err != nil {
+			log.Fatal("something went wrong ")
+		}
+		movieDetails.Duration = duration
+	}
+
+	directorsRoot := doc.Find("meta", "name", "twitter:data1")
+	if directorsRoot.Error != nil {
+		log.Fatal("cannot find directors")
+	} else {
+		movieDetails.Director = directorsRoot.Attrs()["content"]
+	}
+
+	ratingRoot := doc.Find("meta", "name", "twitter:data2")
+	if ratingRoot.Error != nil {
+		log.Print("couldnt find movie rating")
+	} else {
+		movieDetails.Rating = ratingRoot.Attrs()["content"]
+	}
+
+	return &movieDetails, nil
 
 }
