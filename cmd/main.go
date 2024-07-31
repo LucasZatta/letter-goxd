@@ -10,12 +10,13 @@ import (
 func main() {
 	startTime := time.Now()
 	scraper := lists.New()
-	movies := scraper.ScrapeWatchlist("zvttx")
+	movies := scraper.PerformanceTest("zvttx")
 	endTime := time.Now()
 
 	fmt.Printf("EXECUTED IN %v\n", endTime.Sub(startTime))
 
-	for _, m := range *movies {
+	for i, m := range *movies {
 		fmt.Printf("%v\n", m)
+		fmt.Println(i)
 	}
 }
