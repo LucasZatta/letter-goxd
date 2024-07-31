@@ -9,3 +9,7 @@ type MovieDetails struct {
 	Director    string
 	Rating      string
 }
+
+type SimpleMovie struct {
+	Nmae string
+}

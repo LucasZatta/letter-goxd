@@ -3,6 +3,7 @@ package lists
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"sync"
 
@@ -148,6 +149,7 @@ func (s *scrape) ScrapeMoviePage(moviePath string) (*MovieDetails, error) {
 	return &movieDetails, nil
 }
 
+// Full detail scrape
 func (s *scrape) PerformanceTest(username string) *[]MovieDetails {
 	path := fmt.Sprintf("https://letterboxd.com/%s/watchlist", username)
 
@@ -197,6 +199,99 @@ func (s *scrape) PerformanceTest(username string) *[]MovieDetails {
 					index := (page-1)*28 + i
 
 					movies[index] = *movie
+					wgMovie.Done()
+				}()
+			}
+			wgMovie.Wait()
+			wgPage.Done()
+		}()
+
+	}
+	wgPage.Wait()
+
+	return &movies
+}
+
+func (s *scrape) CommonRandom(usernames []string) *MovieDetails {
+	matrix := [][]string{}
+	wg := sync.WaitGroup{}
+	for _, user := range usernames {
+		wg.Add(1)
+		go func() {
+			matrix = append(matrix, *s.SimpleScrape(user))
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+
+	movie, err := s.ScrapeMoviePage(*HashGeneric(matrix[0], matrix[1]))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return movie
+}
+
+func HashGeneric(a []string, b []string) *string {
+	set := make([]string, 0)
+	hash := make(map[string]struct{})
+
+	for _, v := range a {
+		hash[v] = struct{}{}
+	}
+
+	for _, v := range b {
+		if _, ok := hash[v]; ok {
+			set = append(set, v)
+		}
+	}
+
+	return &set[rand.Intn(len(set))]
+}
+
+func (s *scrape) SimpleScrape(username string) *[]string {
+	path := fmt.Sprintf("https://letterboxd.com/%s/watchlist", username)
+
+	resp, err := soup.Get(path)
+	if err != nil {
+		os.Exit(1)
+	}
+
+	doc := soup.HTMLParse(resp)
+
+	totalMovies := util.StringElementToInt(doc.Find("span", "class", "js-watchlist-count").Text())
+
+	movies := make([]string, totalMovies)
+
+	wgPage := sync.WaitGroup{}
+	wgMovie := sync.WaitGroup{}
+
+	totalPages := (totalMovies / 28) + 1
+
+	for page := 1; page <= totalPages; page++ {
+		wgPage.Add(1)
+		go func() {
+			pathPage := fmt.Sprintf("%s/page/%d", path, page)
+
+			resp, err := soup.Get(pathPage)
+			if err != nil {
+				os.Exit(1)
+			}
+
+			doc := soup.HTMLParse(resp)
+			table := doc.Find("ul", "class", "poster-list")
+			films := table.FindAll("li", "class", "poster-container")
+
+			for i, filmEntry := range films {
+				wgMovie.Add(1)
+				go func() {
+					children := filmEntry.Find("div", "class", "really-lazy-load")
+
+					moviePath := children.Attrs()["data-target-link"]
+
+					index := (page-1)*28 + i
+
+					movies[index] = moviePath
 					wgMovie.Done()
 				}()
 			}
