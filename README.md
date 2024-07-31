@@ -1,2 +1,2 @@
 # letter-goxd
-Letterboxd webscrapper built using colly
+Letterboxd webscrapper built using soup
